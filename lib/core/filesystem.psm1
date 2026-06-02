@@ -186,6 +186,133 @@ function folderRename($path, $newName)
     return $true
 }
 
+function folderSyncMirror($source,$dest,$onProgress)
+{
+    $source = (Resolve-Path $source).Path
+    $dest   = $dest.TrimEnd('\')
+
+    if (!(Test-Path -LiteralPath $dest))
+    {
+        New-Item -ItemType Directory -Path $dest | Out-Null
+    }
+
+    $dest = (Resolve-Path $dest).Path
+
+    $srcFiles  = Get-ChildItem -LiteralPath $source -Recurse -File
+    $destFiles = Get-ChildItem -LiteralPath $dest   -Recurse -File
+
+    $script:total    = $srcFiles.Count + $destFiles.Count
+    $script:actual   = 0
+    $script:lastPct  = -1
+
+    # --- CREAR DIRECTORIOS FALTANTES ---
+    $dirs = Get-ChildItem -LiteralPath $source -Recurse -Directory
+
+    foreach ($dir in $dirs)
+    {
+        $relative  = $dir.FullName.Substring($source.Length).TrimStart('\')
+        $targetDir = Join-Path $dest $relative
+
+        if (!(Test-Path -LiteralPath $targetDir))
+        {
+            New-Item -ItemType Directory -Path $targetDir | Out-Null
+        }
+    }
+
+    # --- AGREGAR / RECUPERAR ARCHIVOS ---
+    foreach ($file in $srcFiles)
+    {
+        $relative = $file.FullName.Substring($source.Length).TrimStart('\')
+        $target   = Join-Path $dest $relative
+
+        $targetDir = Split-Path $target
+
+        if (!(Test-Path -LiteralPath $targetDir))
+        {
+            New-Item -ItemType Directory -Path $targetDir | Out-Null
+        }
+
+        $copiar = $true
+
+        if (Test-Path -LiteralPath $target)
+        {
+            $destFile = Get-Item -LiteralPath $target
+
+            if ($destFile.Length -eq $file.Length)
+            {
+                if ($destFile.LastWriteTime -eq $file.LastWriteTime)
+                {
+                    $copiar = $false
+                }
+                else
+                {
+                    $h1 = (Get-FileHash -LiteralPath $file.FullName).Hash
+                    $h2 = (Get-FileHash -LiteralPath $target).Hash
+
+                    if ($h1 -eq $h2)
+                    {
+                        $copiar = $false
+                    }
+                }
+            }
+        }
+
+        if ($copiar)
+        {
+            Copy-Item -LiteralPath $file.FullName -Destination $target -Force
+        }
+
+        _tickProgress $onProgress
+    }
+
+    # --- ELIMINAR ARCHIVOS SOBRANTES ---
+    foreach ($d in $destFiles)
+    {
+        $relative = $d.FullName.Substring($dest.Length).TrimStart('\')
+        $srcFile  = Join-Path $source $relative
+
+        if (!(Test-Path -LiteralPath $srcFile))
+        {
+            Remove-Item -LiteralPath $d.FullName -Force
+        }
+
+        _tickProgress $onProgress
+    }
+
+    # --- ELIMINAR DIRECTORIOS SOBRANTES ---
+    $destDirs = Get-ChildItem -LiteralPath $dest -Recurse -Directory | Sort-Object FullName -Descending
+
+    foreach ($d in $destDirs)
+    {
+        $relative = $d.FullName.Substring($dest.Length).TrimStart('\')
+        $srcDir   = Join-Path $source $relative
+
+        if (!(Test-Path -LiteralPath $srcDir))
+        {
+            Remove-Item -LiteralPath $d.FullName -Recurse -Force
+        }
+    }
+}
+
+function _tickProgress($onProgress)
+{
+    if ($script:total -le 0) { return }
+
+    $script:actual++
+
+    $pct = [int](($script:actual * 100) / $script:total)
+
+    if ($pct -ne $script:lastPct)
+    {
+        if ($onProgress)
+        {
+            & $onProgress $pct
+        }
+
+        $script:lastPct = $pct
+    }
+}
+
 # +---------+------------------------------------------------------------------+
 # | CORE    | File                                                             |
 # +---------+------------------------------------------------------------------+
